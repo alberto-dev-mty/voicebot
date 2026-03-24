@@ -45,7 +45,7 @@ const ultimoEventoConsultado = ref(null);
 let peerConnection = null;
 let dataChannel = null;
 let localStream = null;
-let audioRemoto = null;
+let audioRespuestaLocal = null;
 let conexionPromise = null;
 let ultimoMensajeUsuarioPendiente = '';
 let toastTimeout = null;
@@ -311,7 +311,7 @@ async function responderSoloAudio(texto, { persistir = false } = {}) {
     });
   }
 
-  await reproducirRespuestaRealtime(respuesta);
+  await reproducirRespuestaOpenAI(respuesta);
 }
 
 function normalizarTexto(texto) {
@@ -435,48 +435,60 @@ async function eliminarFavorito(eventoId) {
   }
 }
 
-function garantizarAudioRemoto() {
-  if (audioRemoto) {
-    return audioRemoto;
-  }
+async function reproducirRespuestaOpenAI(texto) {
+  try {
+    const respuesta = (texto || '').trim();
 
-  const audio = document.createElement('audio');
-  audio.autoplay = true;
-  audio.playsInline = true;
+    if (!respuesta) {
+      return;
+    }
 
-  audio.addEventListener('playing', () => {
+    if (audioRespuestaLocal) {
+      audioRespuestaLocal.pause();
+      audioRespuestaLocal.src = '';
+      audioRespuestaLocal = null;
+    }
+
+    const response = await fetch(apiUrl('/api/voz'), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ texto: respuesta }),
+    });
+
+    if (!response.ok) {
+      throw new Error('No fue posible generar el audio.');
+    }
+
+    const audioBlob = await response.blob();
+    const audioUrl = URL.createObjectURL(audioBlob);
+    const audio = document.createElement('audio');
+    audio.preload = 'auto';
+    audio.autoplay = true;
+    audio.src = audioUrl;
+    audio.playsInline = true;
+    audio.load();
+    audioRespuestaLocal = audio;
     reproduciendoAudio.value = true;
-  });
 
-  audio.addEventListener('pause', () => {
+    audio.onended = () => {
+      reproduciendoAudio.value = false;
+      URL.revokeObjectURL(audioUrl);
+      audioRespuestaLocal = null;
+    };
+
+    audio.onerror = () => {
+      reproduciendoAudio.value = false;
+      URL.revokeObjectURL(audioUrl);
+      audioRespuestaLocal = null;
+    };
+
+    await audio.play();
+  } catch (err) {
     reproduciendoAudio.value = false;
-  });
-
-  audio.addEventListener('ended', () => {
-    reproduciendoAudio.value = false;
-  });
-
-  audioRemoto = audio;
-  return audio;
-}
-
-async function reproducirRespuestaRealtime(texto) {
-  const respuesta = (texto || '').trim();
-
-  if (!respuesta) {
-    return;
+    error.value = err.message;
   }
-
-  await asegurarSesionRealtime();
-  habilitarMicrofono(false);
-
-  enviarEventoRealtime({
-    type: 'response.create',
-    response: {
-      modalities: ['audio'],
-      instructions: `Di exactamente el siguiente texto en espanol, sin agregar, quitar ni cambiar nada: ${respuesta}`,
-    },
-  });
 }
 
 async function resolverConsultaControlada(texto, { soloAudio = false } = {}) {
@@ -528,7 +540,7 @@ async function resolverConsultaControlada(texto, { soloAudio = false } = {}) {
     }
 
     registrarRespuestaAsistente(respuesta);
-    await reproducirRespuestaRealtime(respuesta);
+    await reproducirRespuestaOpenAI(respuesta);
   } finally {
     cargandoChat.value = false;
   }
@@ -634,11 +646,8 @@ async function iniciarSesionRealtime() {
   });
 
   peerConnection = new RTCPeerConnection();
-  garantizarAudioRemoto();
-
-  peerConnection.ontrack = (event) => {
-    const audio = garantizarAudioRemoto();
-    audio.srcObject = event.streams[0];
+  peerConnection.ontrack = () => {
+    // Realtime se usa solo para transcripcion; la respuesta de voz sale por OpenAI TTS.
   };
 
   localStream.getTracks().forEach((track) => {
@@ -789,10 +798,10 @@ function cerrarSesionRealtime() {
     localStream = null;
   }
 
-  if (audioRemoto) {
-    audioRemoto.pause();
-    audioRemoto.srcObject = null;
-    audioRemoto = null;
+  if (audioRespuestaLocal) {
+    audioRespuestaLocal.pause();
+    audioRespuestaLocal.src = '';
+    audioRespuestaLocal = null;
   }
 
   conectandoSesion.value = false;
@@ -933,7 +942,7 @@ onBeforeUnmount(() => {
                 type="button"
                 class="console-voice"
                 :disabled="!ultimoMensajeAsistente"
-                @click="reproducirRespuestaRealtime(ultimoMensajeAsistente?.contenido)"
+                @click="reproducirRespuestaOpenAI(ultimoMensajeAsistente?.contenido)"
               >
                 <FontAwesomeIcon icon="fa-solid fa-volume-high" />
               </button>

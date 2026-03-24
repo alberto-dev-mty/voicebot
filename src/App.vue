@@ -288,6 +288,30 @@ function registrarRespuestaAsistente(texto) {
   });
 }
 
+function limpiarMensajeUsuarioPendiente() {
+  ultimoMensajeUsuarioPendiente = '';
+}
+
+async function responderSoloAudio(texto, { persistir = false } = {}) {
+  const respuesta = (texto || '').trim();
+
+  if (!respuesta) {
+    limpiarMensajeUsuarioPendiente();
+    return;
+  }
+
+  const mensajeUsuario = ultimoMensajeUsuarioPendiente;
+  limpiarMensajeUsuarioPendiente();
+
+  if (persistir && mensajeUsuario) {
+    persistirInteraccion(mensajeUsuario, respuesta).catch((err) => {
+      error.value = err.message;
+    });
+  }
+
+  await reproducirRespuestaLocal(respuesta);
+}
+
 function normalizarTexto(texto) {
   return (texto || '')
     .normalize('NFD')
@@ -471,7 +495,7 @@ async function reproducirRespuestaLocal(texto) {
   }
 }
 
-async function resolverConsultaControlada(texto) {
+async function resolverConsultaControlada(texto, { soloAudio = false } = {}) {
   cargandoChat.value = true;
 
   try {
@@ -512,8 +536,15 @@ async function resolverConsultaControlada(texto) {
       favoritos.value = data.meta.favoritos;
     }
 
-    registrarRespuestaAsistente(data.respuesta || 'No hubo respuesta disponible.');
-    await reproducirRespuestaLocal(data.respuesta || 'No hubo respuesta disponible.');
+    const respuesta = data.respuesta || 'No hubo respuesta disponible.';
+
+    if (soloAudio) {
+      await responderSoloAudio(respuesta, { persistir: false });
+      return;
+    }
+
+    registrarRespuestaAsistente(respuesta);
+    await reproducirRespuestaLocal(respuesta);
   } finally {
     cargandoChat.value = false;
   }
@@ -557,12 +588,17 @@ function manejarEventoRealtime(payload) {
 
       if (esSaludoSimple(payload.transcript)) {
         const respuesta = 'Hola, que hecho historico quieres consultar?';
-        registrarRespuestaAsistente(respuesta);
-        cargandoChat.value = false;
+        responderSoloAudio(respuesta, { persistir: true })
+          .catch((err) => {
+            error.value = err.message;
+          })
+          .finally(() => {
+            cargandoChat.value = false;
+          });
         return;
       }
 
-      resolverConsultaControlada(payload.transcript)
+      resolverConsultaControlada(payload.transcript, { soloAudio: true })
         .catch((err) => {
           error.value = err.message;
           cargandoChat.value = false;

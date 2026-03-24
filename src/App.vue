@@ -3,6 +3,8 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 
 const MENSAJE_BIENVENIDA =
   'Listo para ayudarte con eventos historicos del dia. Toca el pulso para comenzar a hablar.';
+const RESPUESTA_SALUDO =
+  'Hola. Puedo ayudarte de forma amable solo con hechos historicos de history.muffinlabs.com. Dime que hecho historico quieres consultar.';
 const CLAVE_SESION_LOCAL = 'voicebot-historico-sesion-id';
 const CLAVE_ULTIMO_EVENTO_LOCAL = 'voicebot-historico-ultimo-evento';
 const API_BASE_URL = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '');
@@ -587,8 +589,7 @@ function manejarEventoRealtime(payload) {
       registrarMensajeUsuarioPendiente(payload.transcript);
 
       if (esSaludoSimple(payload.transcript)) {
-        const respuesta = 'Hola, que hecho historico quieres consultar?';
-        responderSoloAudio(respuesta, { persistir: true })
+        responderSoloAudio(RESPUESTA_SALUDO, { persistir: true })
           .catch((err) => {
             error.value = err.message;
           })
@@ -762,8 +763,7 @@ async function enviarTextoManual() {
     registrarMensajeUsuarioPendiente(mensaje);
 
     if (esSaludoSimple(mensaje)) {
-      const respuesta = 'Hola, que hecho historico quieres consultar?';
-      registrarRespuestaAsistente(respuesta);
+      registrarRespuestaAsistente(RESPUESTA_SALUDO);
       textoUsuario.value = '';
       return;
     }

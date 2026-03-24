@@ -47,7 +47,6 @@ let dataChannel = null;
 let localStream = null;
 let audioRemoto = null;
 let conexionPromise = null;
-let ultimoMensajeUsuarioPendiente = '';
 let toastTimeout = null;
 
 function apiUrl(path) {
@@ -235,85 +234,6 @@ function mostrarToast(mensaje) {
   }, 2600);
 }
 
-async function persistirInteraccion(mensajeUsuario, respuestaAsistente) {
-  if (!sesionId.value || !mensajeUsuario || !respuestaAsistente) {
-    return;
-  }
-
-  const response = await fetch(apiUrl(`/api/realtime/sessions/${sesionId.value}/messages`), {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      mensajeUsuario,
-      respuestaAsistente,
-    }),
-  });
-
-  const result = await response.json();
-
-  if (!response.ok || !result.ok) {
-    throw new Error(result.message || 'No fue posible guardar la conversacion.');
-  }
-}
-
-function registrarMensajeUsuarioPendiente(texto) {
-  const mensaje = (texto || '').trim();
-
-  if (!mensaje) {
-    return;
-  }
-
-  agregarMensaje('user', mensaje);
-  ultimoMensajeUsuarioPendiente = mensaje;
-}
-
-function registrarRespuestaAsistente(texto) {
-  const respuesta = (texto || '').trim();
-
-  if (!respuesta) {
-    return;
-  }
-
-  agregarMensaje('assistant', respuesta);
-
-  const mensajeUsuario = ultimoMensajeUsuarioPendiente;
-  ultimoMensajeUsuarioPendiente = '';
-
-  if (!mensajeUsuario) {
-    return;
-  }
-
-  persistirInteraccion(mensajeUsuario, respuesta).catch((err) => {
-    error.value = err.message;
-  });
-}
-
-function limpiarMensajeUsuarioPendiente() {
-  ultimoMensajeUsuarioPendiente = '';
-}
-
-async function responderSoloAudio(texto, { persistir = false } = {}) {
-  const respuesta = (texto || '').trim();
-
-  if (!respuesta) {
-    limpiarMensajeUsuarioPendiente();
-    return;
-  }
-
-  const mensajeUsuario = ultimoMensajeUsuarioPendiente;
-  limpiarMensajeUsuarioPendiente();
-
-  if (persistir && mensajeUsuario) {
-    persistirInteraccion(mensajeUsuario, respuesta).catch((err) => {
-      error.value = err.message;
-    });
-  }
-
-  await reproducirRespuestaOpenAI(respuesta);
-}
-
 function normalizarTexto(texto) {
   return (texto || '')
     .normalize('NFD')
@@ -399,7 +319,6 @@ async function cargarHistorialSesionActual(sesionObjetivo = sesionId.value) {
     }
 
     mensajes.value = construirMensajesDesdeHistorial(result.data);
-    ultimoMensajeUsuarioPendiente = '';
   } catch (err) {
     error.value = err.message;
   } finally {
@@ -473,64 +392,106 @@ async function reproducirRespuestaOpenAI(texto) {
   enviarEventoRealtime({
     type: 'response.create',
     response: {
-      modalities: ['audio'],
+      modalities: ['audio', 'text'],
       instructions: `Di exactamente el siguiente texto en espanol, sin agregar ni cambiar nada: ${respuesta}`,
     },
   });
 }
 
-async function resolverConsultaControlada(texto, { soloAudio = false } = {}) {
+async function consultarBackend(texto) {
+  const response = await fetch(apiUrl('/api/chat'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      mensaje: texto,
+      sesionId: sesionId.value,
+    }),
+  });
+
+  const result = await response.json();
+
+  if (!response.ok || !result.ok) {
+    throw new Error(result.message || 'No fue posible procesar la consulta.');
+  }
+
+  return result.data || {};
+}
+
+async function aplicarMetaRespuesta(data) {
+  if (data.meta?.ultimoEventoConsultado) {
+    guardarUltimoEventoConsultado(data.meta.ultimoEventoConsultado);
+  }
+
+  if (data.meta?.favoritoGuardado) {
+    const favorito = data.meta.favoritoGuardado;
+    favoritos.value = [
+      favorito,
+      ...favoritos.value.filter((item) => item.id !== favorito.id),
+    ];
+    mostrarToast(`Se agrego a favoritos: ${favorito.titulo}`);
+    await cargarFavoritos();
+  }
+
+  if (Array.isArray(data.meta?.favoritos)) {
+    favoritos.value = data.meta.favoritos;
+  }
+}
+
+async function resolverConsultaControlada(texto) {
   cargandoChat.value = true;
 
   try {
-    const response = await fetch(apiUrl('/api/chat'), {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        mensaje: texto,
-        sesionId: sesionId.value,
-      }),
-    });
-
-    const result = await response.json();
-
-    if (!response.ok || !result.ok) {
-      throw new Error(result.message || 'No fue posible procesar la consulta.');
-    }
-
-    const data = result.data || {};
-
-    if (data.meta?.ultimoEventoConsultado) {
-      guardarUltimoEventoConsultado(data.meta.ultimoEventoConsultado);
-    }
-
-    if (data.meta?.favoritoGuardado) {
-      const favorito = data.meta.favoritoGuardado;
-      favoritos.value = [
-        favorito,
-        ...favoritos.value.filter((item) => item.id !== favorito.id),
-      ];
-      mostrarToast(`Se agrego a favoritos: ${favorito.titulo}`);
-      await cargarFavoritos();
-    }
-
-    if (Array.isArray(data.meta?.favoritos)) {
-      favoritos.value = data.meta.favoritos;
-    }
+    const data = await consultarBackend(texto);
+    await aplicarMetaRespuesta(data);
 
     const respuesta = data.respuesta || 'No hubo respuesta disponible.';
-
-    if (soloAudio) {
-      await responderSoloAudio(respuesta, { persistir: false });
-      return;
-    }
-
-    registrarRespuestaAsistente(respuesta);
+    agregarMensaje('assistant', respuesta);
     await reproducirRespuestaOpenAI(respuesta);
   } finally {
     cargandoChat.value = false;
+  }
+}
+
+async function ejecutarToolRealtime(callId, texto) {
+  const mensaje = (texto || '').trim();
+
+  if (!callId || !mensaje) {
+    return;
+  }
+
+  try {
+    const data = await consultarBackend(mensaje);
+    await aplicarMetaRespuesta(data);
+
+    const respuesta = data.respuesta || 'No hubo respuesta disponible.';
+    agregarMensaje('assistant', respuesta);
+    habilitarMicrofono(false);
+
+    enviarEventoRealtime({
+      type: 'conversation.item.create',
+      item: {
+        type: 'function_call_output',
+        call_id: callId,
+        output: JSON.stringify({
+          respuesta,
+        }),
+      },
+    });
+
+    enviarEventoRealtime({
+      type: 'response.create',
+      response: {
+        modalities: ['audio', 'text'],
+        instructions:
+          'Responde en espanol usando exclusivamente el campo respuesta devuelto por la herramienta. No agregues informacion nueva.',
+      },
+    });
+  } catch (err) {
+    error.value = err.message;
+    cargandoChat.value = false;
+    habilitarMicrofono(true);
   }
 }
 
@@ -568,24 +529,29 @@ function manejarEventoRealtime(payload) {
       cargandoChat.value = true;
       return;
     case 'conversation.item.input_audio_transcription.completed':
-      registrarMensajeUsuarioPendiente(payload.transcript);
+      agregarMensaje('user', payload.transcript);
+      return;
+    case 'response.function_call_arguments.done': {
+      let argumentoTexto = '';
 
-      if (esSaludoSimple(payload.transcript)) {
-        responderSoloAudio(RESPUESTA_SALUDO, { persistir: true })
-          .catch((err) => {
-            error.value = err.message;
-          })
-          .finally(() => {
-            cargandoChat.value = false;
-          });
-        return;
+      try {
+        const argumentos = JSON.parse(payload.arguments || '{}');
+        argumentoTexto = argumentos.mensaje || '';
+      } catch {
+        argumentoTexto = '';
       }
 
-      resolverConsultaControlada(payload.transcript, { soloAudio: true })
-        .catch((err) => {
-          error.value = err.message;
-          cargandoChat.value = false;
-        });
+      ejecutarToolRealtime(payload.call_id, argumentoTexto);
+      return;
+    }
+    case 'response.audio_transcript.done':
+      agregarMensaje('assistant', payload.transcript);
+      return;
+    case 'response.done':
+      cargandoChat.value = false;
+      if (sesionRealtimeActiva.value) {
+        habilitarMicrofono(true);
+      }
       return;
     case 'error':
       error.value = payload.error?.message || 'Ocurrio un error en la sesion realtime.';
@@ -604,6 +570,26 @@ function configurarSesionRealtime(configuracion) {
       instructions: configuracion.instructions,
       voice: configuracion.voice,
       modalities: ['audio', 'text'],
+      tools: [
+        {
+          type: 'function',
+          name: 'resolver_consulta_historica',
+          description:
+            'Resuelve cualquier turno del usuario consultando el backend historico. Debe usarse para saludos, consultas historicas, favoritos y rechazos fuera de ambito.',
+          parameters: {
+            type: 'object',
+            properties: {
+              mensaje: {
+                type: 'string',
+                description: 'Texto exacto del usuario en espanol.',
+              },
+            },
+            required: ['mensaje'],
+            additionalProperties: false,
+          },
+        },
+      ],
+      tool_choice: 'auto',
       input_audio_transcription: {
         model: configuracion.transcriptionModel,
       },
@@ -612,7 +598,7 @@ function configurarSesionRealtime(configuracion) {
         threshold: 0.5,
         prefix_padding_ms: 300,
         silence_duration_ms: 500,
-        create_response: false,
+        create_response: true,
         interrupt_response: true,
       },
     },
@@ -638,6 +624,11 @@ async function iniciarSesionRealtime() {
   peerConnection.ontrack = (event) => {
     const audio = garantizarAudioRemoto();
     audio.srcObject = event.streams[0];
+    audio.muted = false;
+    audio.volume = 1;
+    audio.play().catch(() => {
+      // no-op
+    });
   };
 
   localStream.getTracks().forEach((track) => {
@@ -741,14 +732,7 @@ async function enviarTextoManual() {
   }
 
   try {
-    registrarMensajeUsuarioPendiente(mensaje);
-
-    if (esSaludoSimple(mensaje)) {
-      registrarRespuestaAsistente(RESPUESTA_SALUDO);
-      textoUsuario.value = '';
-      return;
-    }
-
+    agregarMensaje('user', mensaje);
     textoUsuario.value = '';
     await resolverConsultaControlada(mensaje);
   } catch (err) {

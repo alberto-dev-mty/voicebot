@@ -311,7 +311,7 @@ async function responderSoloAudio(texto, { persistir = false } = {}) {
     });
   }
 
-  await reproducirRespuestaLocal(respuesta);
+  await reproducirRespuestaRealtime(respuesta);
 }
 
 function normalizarTexto(texto) {
@@ -460,41 +460,23 @@ function garantizarAudioRemoto() {
   return audio;
 }
 
-async function reproducirRespuestaLocal(texto) {
-  try {
-    const response = await fetch(apiUrl('/api/voz'), {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ texto }),
-    });
+async function reproducirRespuestaRealtime(texto) {
+  const respuesta = (texto || '').trim();
 
-    if (!response.ok) {
-      throw new Error('No fue posible generar el audio.');
-    }
-
-    const audioBlob = await response.blob();
-    const audioUrl = URL.createObjectURL(audioBlob);
-    const audio = new Audio(audioUrl);
-
-    reproduciendoAudio.value = true;
-
-    audio.onended = () => {
-      reproduciendoAudio.value = false;
-      URL.revokeObjectURL(audioUrl);
-    };
-
-    audio.onerror = () => {
-      reproduciendoAudio.value = false;
-      URL.revokeObjectURL(audioUrl);
-    };
-
-    await audio.play();
-  } catch (err) {
-    reproduciendoAudio.value = false;
-    error.value = err.message;
+  if (!respuesta) {
+    return;
   }
+
+  await asegurarSesionRealtime();
+  habilitarMicrofono(false);
+
+  enviarEventoRealtime({
+    type: 'response.create',
+    response: {
+      modalities: ['audio'],
+      instructions: `Di exactamente el siguiente texto en espanol, sin agregar, quitar ni cambiar nada: ${respuesta}`,
+    },
+  });
 }
 
 async function resolverConsultaControlada(texto, { soloAudio = false } = {}) {
@@ -546,7 +528,7 @@ async function resolverConsultaControlada(texto, { soloAudio = false } = {}) {
     }
 
     registrarRespuestaAsistente(respuesta);
-    await reproducirRespuestaLocal(respuesta);
+    await reproducirRespuestaRealtime(respuesta);
   } finally {
     cargandoChat.value = false;
   }
@@ -951,7 +933,7 @@ onBeforeUnmount(() => {
                 type="button"
                 class="console-voice"
                 :disabled="!ultimoMensajeAsistente"
-                @click="reproducirRespuestaLocal(ultimoMensajeAsistente?.contenido)"
+                @click="reproducirRespuestaRealtime(ultimoMensajeAsistente?.contenido)"
               >
                 <FontAwesomeIcon icon="fa-solid fa-volume-high" />
               </button>
